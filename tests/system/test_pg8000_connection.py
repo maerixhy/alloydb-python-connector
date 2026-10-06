@@ -15,6 +15,8 @@
 from datetime import datetime
 import os
 
+import pytest  # isort: skip
+
 # [START alloydb_sqlalchemy_connect_connector]
 import sqlalchemy
 
@@ -87,15 +89,16 @@ def create_sqlalchemy_engine(
 # [END alloydb_sqlalchemy_connect_connector]
 
 
-def test_pg8000_connection(ip_type: str) -> None:
-    """Basic test to get time from database."""
+@pytest.mark.private_ip
+def test_pg8000_connection() -> None:
+    """Basic test to get time from database over private IP."""
     inst_uri = os.environ["ALLOYDB_INSTANCE_URI"]
     user = os.environ["ALLOYDB_USER"]
     password = os.environ["ALLOYDB_PASS"]
     db = os.environ["ALLOYDB_DB"]
 
     engine, connector = create_sqlalchemy_engine(
-        inst_uri, user, password, db, ip_type=ip_type
+        inst_uri, user, password, db, ip_type="PRIVATE"
     )
     with engine.connect() as conn:
         time = conn.execute(sqlalchemy.text("SELECT NOW()")).fetchone()
@@ -105,7 +108,7 @@ def test_pg8000_connection(ip_type: str) -> None:
     connector.close()
 
 
-def test_lazy_pg8000_connection(ip_type: str) -> None:
+def test_lazy_pg8000_connection() -> None:
     """Basic test to get time from database."""
     inst_uri = os.environ["ALLOYDB_INSTANCE_URI"]
     user = os.environ["ALLOYDB_USER"]
@@ -113,7 +116,7 @@ def test_lazy_pg8000_connection(ip_type: str) -> None:
     db = os.environ["ALLOYDB_DB"]
 
     engine, connector = create_sqlalchemy_engine(
-        inst_uri, user, password, db, "lazy", ip_type=ip_type
+        inst_uri, user, password, db, "lazy", ip_type="PUBLIC"
     )
     with engine.connect() as conn:
         time = conn.execute(sqlalchemy.text("SELECT NOW()")).fetchone()

@@ -14,6 +14,8 @@
 
 import os
 
+import pytest  # isort: skip
+
 # [START alloydb_sqlalchemy_connect_async_connector]
 import asyncpg
 import sqlalchemy
@@ -146,15 +148,16 @@ async def create_asyncpg_pool(
     return pool, connector
 
 
-async def test_sqlalchemy_connection_with_asyncpg(ip_type: str) -> None:
-    """Basic test to get time from database."""
+@pytest.mark.private_ip
+async def test_sqlalchemy_connection_with_asyncpg() -> None:
+    """Basic test to get time from database over private IP."""
     inst_uri = os.environ["ALLOYDB_INSTANCE_URI"]
     user = os.environ["ALLOYDB_USER"]
     password = os.environ["ALLOYDB_PASS"]
     db = os.environ["ALLOYDB_DB"]
 
     pool, connector = await create_sqlalchemy_engine(
-        inst_uri, user, password, db, ip_type=ip_type
+        inst_uri, user, password, db, ip_type="PRIVATE"
     )
 
     async with pool.connect() as conn:
@@ -164,7 +167,7 @@ async def test_sqlalchemy_connection_with_asyncpg(ip_type: str) -> None:
     await connector.close()
 
 
-async def test_lazy_sqlalchemy_connection_with_asyncpg(ip_type: str) -> None:
+async def test_lazy_sqlalchemy_connection_with_asyncpg() -> None:
     """Basic test to get time from database."""
     inst_uri = os.environ["ALLOYDB_INSTANCE_URI"]
     user = os.environ["ALLOYDB_USER"]
@@ -172,7 +175,7 @@ async def test_lazy_sqlalchemy_connection_with_asyncpg(ip_type: str) -> None:
     db = os.environ["ALLOYDB_DB"]
 
     pool, connector = await create_sqlalchemy_engine(
-        inst_uri, user, password, db, "lazy", ip_type=ip_type
+        inst_uri, user, password, db, "lazy", ip_type="PUBLIC"
     )
 
     async with pool.connect() as conn:
@@ -182,7 +185,7 @@ async def test_lazy_sqlalchemy_connection_with_asyncpg(ip_type: str) -> None:
     await connector.close()
 
 
-async def test_connection_with_asyncpg(ip_type: str) -> None:
+async def test_connection_with_asyncpg() -> None:
     """Basic test to get time from database."""
     inst_uri = os.environ["ALLOYDB_INSTANCE_URI"]
     user = os.environ["ALLOYDB_USER"]
@@ -190,7 +193,7 @@ async def test_connection_with_asyncpg(ip_type: str) -> None:
     db = os.environ["ALLOYDB_DB"]
 
     pool, connector = await create_asyncpg_pool(
-        inst_uri, user, password, db, ip_type=ip_type
+        inst_uri, user, password, db, ip_type="PUBLIC"
     )
 
     async with pool.acquire() as conn:
@@ -200,7 +203,7 @@ async def test_connection_with_asyncpg(ip_type: str) -> None:
     await connector.close()
 
 
-async def test_lazy_connection_with_asyncpg(ip_type: str) -> None:
+async def test_lazy_connection_with_asyncpg() -> None:
     """Basic test to get time from database."""
     inst_uri = os.environ["ALLOYDB_INSTANCE_URI"]
     user = os.environ["ALLOYDB_USER"]
@@ -208,7 +211,7 @@ async def test_lazy_connection_with_asyncpg(ip_type: str) -> None:
     db = os.environ["ALLOYDB_DB"]
 
     pool, connector = await create_asyncpg_pool(
-        inst_uri, user, password, db, "lazy", ip_type=ip_type
+        inst_uri, user, password, db, "lazy", ip_type="PUBLIC"
     )
 
     async with pool.acquire() as conn:

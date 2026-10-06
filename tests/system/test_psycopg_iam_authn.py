@@ -83,13 +83,13 @@ def create_sqlalchemy_engine(
 # [END alloydb_sqlalchemy_connect_connector_psycopg_iam_authn]
 
 
-def test_psycopg_iam_authn_time(ip_type: str) -> None:
+def test_psycopg_iam_authn_time() -> None:
     """Basic test to get time from database."""
     inst_uri = os.environ["ALLOYDB_INSTANCE_URI"]
     user = os.environ["ALLOYDB_IAM_USER"]
     db = os.environ["ALLOYDB_DB"]
 
-    engine, connector = create_sqlalchemy_engine(inst_uri, user, db, ip_type=ip_type)
+    engine, connector = create_sqlalchemy_engine(inst_uri, user, db, ip_type="PUBLIC")
     with engine.connect() as conn:
         time = conn.execute(sqlalchemy.text("SELECT NOW()")).fetchone()
         conn.commit()
@@ -98,14 +98,14 @@ def test_psycopg_iam_authn_time(ip_type: str) -> None:
     connector.close()
 
 
-def test_psycopg_iam_authn_lazy(ip_type: str) -> None:
+def test_psycopg_iam_authn_lazy() -> None:
     """Basic test to get time from database."""
     inst_uri = os.environ["ALLOYDB_INSTANCE_URI"]
     user = os.environ["ALLOYDB_IAM_USER"]
     db = os.environ["ALLOYDB_DB"]
 
     engine, connector = create_sqlalchemy_engine(
-        inst_uri, user, db, "lazy", ip_type=ip_type
+        inst_uri, user, db, "lazy", ip_type="PUBLIC"
     )
     with engine.connect() as conn:
         time = conn.execute(sqlalchemy.text("SELECT NOW()")).fetchone()

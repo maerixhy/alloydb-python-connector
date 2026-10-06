@@ -85,14 +85,14 @@ async def create_sqlalchemy_engine(
 # [END alloydb_sqlalchemy_connect_async_connector_iam_authn]
 
 
-async def test_asyncpg_iam_authn_time(ip_type: str) -> None:
+async def test_asyncpg_iam_authn_time() -> None:
     """Basic test to get time from database."""
     inst_uri = os.environ["ALLOYDB_INSTANCE_URI"]
     user = os.environ["ALLOYDB_IAM_USER"]
     db = os.environ["ALLOYDB_DB"]
 
     pool, connector = await create_sqlalchemy_engine(
-        inst_uri, user, db, ip_type=ip_type
+        inst_uri, user, db, ip_type="PUBLIC"
     )
     async with pool.connect() as conn:
         time = (await conn.execute(sqlalchemy.text("SELECT NOW()"))).fetchone()
@@ -103,14 +103,14 @@ async def test_asyncpg_iam_authn_time(ip_type: str) -> None:
     await pool.dispose()
 
 
-async def test_asyncpg_iam_authn_lazy(ip_type: str) -> None:
+async def test_asyncpg_iam_authn_lazy() -> None:
     """Basic test to get time from database."""
     inst_uri = os.environ["ALLOYDB_INSTANCE_URI"]
     user = os.environ["ALLOYDB_IAM_USER"]
     db = os.environ["ALLOYDB_DB"]
 
     pool, connector = await create_sqlalchemy_engine(
-        inst_uri, user, db, "lazy", ip_type=ip_type
+        inst_uri, user, db, "lazy", ip_type="PUBLIC"
     )
     async with pool.connect() as conn:
         time = (await conn.execute(sqlalchemy.text("SELECT NOW()"))).fetchone()

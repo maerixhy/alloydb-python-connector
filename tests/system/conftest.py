@@ -14,12 +14,10 @@
 
 """Shared configuration for system tests.
 
-By default, connector tests connect over private IP and every test runs.
-This requires network access to the instance's VPC.
-
-Pass --skip-private-ip to run from outside the VPC. Connector tests then
-connect over public IP, and tests marked private_ip (PSC and direct
-connection tests) are skipped.
+Most connector tests connect over public IP. Tests marked private_ip need
+network access to the instance's VPC (private IP, PSC and direct
+connections). Pass --skip-private-ip to skip them when running from outside
+the VPC.
 """
 
 import pytest
@@ -30,7 +28,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         "--skip-private-ip",
         action="store_true",
         default=False,
-        help="Skip tests that need private IP access and connect over public IP.",
+        help="Skip tests that need private network access (private IP, PSC, direct).",
     )
 
 
@@ -50,9 +48,3 @@ def pytest_collection_modifyitems(
     for item in items:
         if "private_ip" in item.keywords:
             item.add_marker(skip)
-
-
-@pytest.fixture
-def ip_type(request: pytest.FixtureRequest) -> str:
-    """IP type for connector tests, PUBLIC when --skip-private-ip is set."""
-    return "PUBLIC" if request.config.getoption("--skip-private-ip") else "PRIVATE"
