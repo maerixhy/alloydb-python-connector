@@ -75,10 +75,7 @@ def create_sqlalchemy_engine(
     return engine, connector
 
 
-@pytest.mark.skipif(
-    os.environ.get("ALLOYDB_IP_TYPE", "PUBLIC") == "PUBLIC",
-    reason="needs VPC access, run with ALLOYDB_IP_TYPE=PRIVATE",
-)
+@pytest.mark.private_ip
 def test_pg8000_time() -> None:
     """Basic test to get time from database."""
     inst_uri = os.environ["ALLOYDB_PSC_INSTANCE_URI"]

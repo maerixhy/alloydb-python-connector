@@ -76,10 +76,7 @@ async def create_sqlalchemy_engine(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(
-    os.environ.get("ALLOYDB_IP_TYPE", "PUBLIC") == "PUBLIC",
-    reason="needs VPC access, run with ALLOYDB_IP_TYPE=PRIVATE",
-)
+@pytest.mark.private_ip
 async def test_connection_with_asyncpg() -> None:
     """Basic test to get time from database."""
     inst_uri = os.environ["ALLOYDB_PSC_INSTANCE_URI"]
