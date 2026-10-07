@@ -55,7 +55,7 @@ platforms. Dependencies are managed with `uv`.
 | `google/cloud/alloydb_connectors_v1/`, `google/api/` | **Generated protobuf code.** Do not hand-edit; excluded from ruff/mypy. |
 | `tests/unit/` | Mocked unit tests (`mocks.py`, `conftest.py`); no network or credentials. |
 | `tests/system/` | Live integration tests against a real AlloyDB instance. |
-| `scripts/`, `.github/workflows/` | Local format, lint and test commands plus CI. There is no `noxfile.py`; CONTRIBUTING.md's mention of `nox` is stale. |
+| `scripts/`, `.github/workflows/` | Local format, lint and test commands plus CI. |
 
 A normal connection follows this sequence:
 
