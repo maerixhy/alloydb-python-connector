@@ -48,6 +48,7 @@ dependencies = [
     "protobuf",
     "google-cloud-alloydb",
     "google-api-core",
+    "opentelemetry-api>=1.44.0",
 ]
 dynamic = ["version"]
 
