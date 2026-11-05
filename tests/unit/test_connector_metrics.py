@@ -51,11 +51,14 @@ INSTANCE_URI = (
     "clusters/test-cluster/instances/test-instance"
 )
 INSTANCE_ATTRS = {
-    "project": "test-project",
-    "location": "test-region",
-    "cluster": "test-cluster",
-    "instance": "test-instance",
+    "alloydb.project_id": "test-project",
+    "alloydb.location": "test-region",
+    "alloydb.cluster_id": "test-cluster",
+    "alloydb.instance_id": "test-instance",
 }
+DIAL_COUNT = "alloydb.connector.dial.count"
+DIAL_DURATION = "alloydb.connector.dial.duration"
+REFRESH_COUNT = "alloydb.connector.refresh.count"
 CONNECT_KWARGS = {"user": "u", "password": "p", "db": "d"}
 
 
@@ -91,8 +94,8 @@ def points(reader: InMemoryMetricReader, name: str) -> list[Any]:
 
 def counts_by_status(reader: InMemoryMetricReader) -> dict[str, int]:
     out: dict[str, int] = {}
-    for p in points(reader, "dial_count"):
-        status = p.attributes["status"]
+    for p in points(reader, DIAL_COUNT):
+        status = p.attributes["alloydb.status"]
         out[status] = out.get(status, 0) + p.value
     return out
 
@@ -116,16 +119,16 @@ def test_instance_attributes_from_domain_scoped_project() -> None:
     attrs = instance_attributes_from_uri(
         "projects/example.com:proj/locations/r/clusters/c/instances/i"
     )
-    assert attrs["project"] == "example.com:proj"
-    assert attrs["instance"] == "i"
+    assert attrs["alloydb.project_id"] == "example.com:proj"
+    assert attrs["alloydb.instance_id"] == "i"
 
 
 def test_instance_attributes_from_invalid_uri() -> None:
     assert instance_attributes_from_uri("not/a/uri") == {
-        "project": "",
-        "location": "",
-        "cluster": "",
-        "instance": "",
+        "alloydb.project_id": "",
+        "alloydb.location": "",
+        "alloydb.cluster_id": "",
+        "alloydb.instance_id": "",
     }
 
 
@@ -158,6 +161,32 @@ def test_dial_tracker_never_raises() -> None:
     dial.finish()
 
 
+def test_metric_contract_matches_go(reader: InMemoryMetricReader) -> None:
+    """Names, units and scope from the Go connector's METRICS.md."""
+    recorder = OpenTelemetryMetricRecorder()
+    attrs = instance_attributes_from_uri(INSTANCE_URI)
+    recorder.record_dial_count(attrs)
+    recorder.record_dial_latency(1.0, attrs)
+    recorder.record_open_connection(1, attrs)
+    recorder.record_bytes_sent(1, attrs)
+    recorder.record_bytes_received(1, attrs)
+    recorder.record_refresh_count(attrs)
+
+    data = reader.get_metrics_data()
+    assert data is not None
+    scopes = data.resource_metrics[0].scope_metrics
+    assert [sm.scope.name for sm in scopes] == ["google.cloud.alloydbconnector"]
+    units = {m.name: m.unit for m in scopes[0].metrics}
+    assert units == {
+        "alloydb.connector.dial.count": "{dial}",
+        "alloydb.connector.dial.duration": "ms",
+        "alloydb.connector.connections.open": "{connection}",
+        "alloydb.connector.bytes.sent": "By",
+        "alloydb.connector.bytes.received": "By",
+        "alloydb.connector.refresh.count": "{refresh}",
+    }
+
+
 # ---------- global provider ----------
 
 
@@ -179,7 +208,7 @@ def test_connector_created_before_app_sets_global_provider() -> None:
         dial.finish()
         names = [m.name for rm in reader.get_metrics_data().resource_metrics
                  for sm in rm.scope_metrics for m in sm.metrics]
-        assert names == ["dial_count"], names
+        assert names == ["alloydb.connector.dial.count"], names
         """
     )
     result = subprocess.run(
@@ -202,28 +231,31 @@ def test_connect_success_records_dial_latency_and_refresh(
             connector.connect(INSTANCE_URI, "pg8000", **CONNECT_KWARGS)
             connector.connect(INSTANCE_URI, "pg8000", **CONNECT_KWARGS)
 
-    dials = points(reader, "dial_count")
-    by_hit = {p.attributes["is_cache_hit"]: p for p in dials}
-    assert by_hit["false"].value == 1 and by_hit["true"].value == 1
-    assert dict(by_hit["false"].attributes) == {
+    dials = points(reader, DIAL_COUNT)
+    by_hit = {p.attributes["alloydb.cache.hit"]: p for p in dials}
+    assert by_hit[False].value == 1 and by_hit[True].value == 1
+    assert dict(by_hit[False].attributes) == {
         **INSTANCE_ATTRS,
-        "connector_type": "python",
-        "auth_type": "built_in",
-        "is_cache_hit": "false",
-        "status": "success",
-        "refresh_type": "refresh_ahead",
+        "alloydb.connector.type": "python",
+        "alloydb.auth.type": "built_in",
+        "alloydb.cache.hit": False,
+        "alloydb.status": "success",
+        "alloydb.refresh.type": "refresh_ahead",
     }
 
-    latency = points(reader, "dial_latencies")[0]
+    latency = points(reader, DIAL_DURATION)[0]
     assert latency.count == 2 and latency.sum > 0
-    assert dict(latency.attributes) == {**INSTANCE_ATTRS, "connector_type": "python"}
+    assert dict(latency.attributes) == {
+        **INSTANCE_ATTRS,
+        "alloydb.connector.type": "python",
+    }
 
-    refresh = points(reader, "refresh_count")[0]
+    refresh = points(reader, REFRESH_COUNT)[0]
     assert dict(refresh.attributes) == {
         **INSTANCE_ATTRS,
-        "connector_type": "python",
-        "status": "success",
-        "refresh_type": "refresh_ahead",
+        "alloydb.connector.type": "python",
+        "alloydb.status": "success",
+        "alloydb.refresh.type": "refresh_ahead",
     }
 
 
@@ -236,10 +268,10 @@ def test_lazy_refresh_type(
     with _connector(credentials, fake_client, refresh_strategy="lazy") as connector:
         with patch("google.cloud.alloydbconnector.pg8000.connect", return_value=True):
             connector.connect(INSTANCE_URI, "pg8000", **CONNECT_KWARGS)
-    assert points(reader, "dial_count")[0].attributes["refresh_type"] == "lazy"
-    refresh = points(reader, "refresh_count")[0]
-    assert refresh.attributes["refresh_type"] == "lazy"
-    assert refresh.attributes["status"] == "success"
+    assert points(reader, DIAL_COUNT)[0].attributes["alloydb.refresh.type"] == "lazy"
+    refresh = points(reader, REFRESH_COUNT)[0]
+    assert refresh.attributes["alloydb.refresh.type"] == "lazy"
+    assert refresh.attributes["alloydb.status"] == "success"
 
 
 @pytest.mark.usefixtures("proxy_server")
@@ -256,8 +288,8 @@ def test_multiple_instances_are_distinguished(
             connector.connect(other, "pg8000", **CONNECT_KWARGS)
 
     totals: dict[str, int] = {}
-    for p in points(reader, "dial_count"):
-        name = p.attributes["instance"]
+    for p in points(reader, DIAL_COUNT):
+        name = p.attributes["alloydb.instance_id"]
         totals[name] = totals.get(name, 0) + p.value
     assert totals == {"test-instance": 1, "other-instance": 2}
 
@@ -270,8 +302,8 @@ def test_no_client_id_is_exported(
     with _connector(credentials, fake_client) as connector:
         with pytest.raises(ValueError):
             connector.connect(INSTANCE_URI, "bogus-driver")
-    attrs = points(reader, "dial_count")[0].attributes
-    assert "client_uid" not in attrs
+    attrs = points(reader, DIAL_COUNT)[0].attributes
+    assert not any("client_uid" in key for key in attrs)
 
 
 def test_unsupported_driver_is_user_error(
@@ -283,7 +315,7 @@ def test_unsupported_driver_is_user_error(
         with pytest.raises(ValueError):
             connector.connect(INSTANCE_URI, "bogus-driver")
     assert counts_by_status(reader) == {"user_error": 1}
-    assert points(reader, "dial_latencies") == []
+    assert points(reader, DIAL_DURATION) == []
 
 
 def test_missing_ip_type_is_user_error(
@@ -306,7 +338,7 @@ def test_refresh_failure_is_cache_error(
         with pytest.raises(RuntimeError):
             connector.connect(INSTANCE_URI, "pg8000")
     assert counts_by_status(reader) == {"cache_error": 1}
-    assert points(reader, "refresh_count")[0].attributes["status"] == "failure"
+    assert points(reader, REFRESH_COUNT)[0].attributes["alloydb.status"] == "failure"
 
 
 def test_invalid_instance_uri_is_cache_error(
@@ -399,7 +431,7 @@ def test_iam_auth_type(
     with _connector(credentials, fake_client) as connector:
         with pytest.raises(ValueError):
             connector.connect(INSTANCE_URI, "bogus", enable_iam_auth=True)
-    assert points(reader, "dial_count")[0].attributes["auth_type"] == "iam"
+    assert points(reader, DIAL_COUNT)[0].attributes["alloydb.auth.type"] == "iam"
 
 
 def test_opt_out_records_nothing(
@@ -411,7 +443,7 @@ def test_opt_out_records_nothing(
         assert isinstance(connector._metric_recorder, NullMetricRecorder)
         with pytest.raises(ValueError):
             connector.connect(INSTANCE_URI, "bogus-driver")
-    assert points(reader, "dial_count") == []
+    assert points(reader, DIAL_COUNT) == []
 
 
 @pytest.mark.usefixtures("proxy_server")
@@ -451,8 +483,8 @@ async def test_async_connect_success(
             await connector.connect(INSTANCE_URI, "asyncpg", user="u", db="d")
 
     assert counts_by_status(reader) == {"success": 1}
-    assert points(reader, "dial_latencies")[0].count == 1
-    assert points(reader, "refresh_count")[0].attributes["status"] == "success"
+    assert points(reader, DIAL_DURATION)[0].count == 1
+    assert points(reader, REFRESH_COUNT)[0].attributes["alloydb.status"] == "success"
 
 
 @pytest.mark.parametrize(
@@ -475,7 +507,7 @@ async def test_async_connect_failure_classified(
             with pytest.raises(type(error)):
                 await connector.connect(INSTANCE_URI, "asyncpg", user="u", db="d")
     assert counts_by_status(reader) == {status: 1}
-    assert points(reader, "dial_latencies") == []
+    assert points(reader, DIAL_DURATION) == []
 
 
 def test_classify_ssl_before_os_error() -> None:

@@ -37,18 +37,22 @@ from google.cloud.alloydbconnector.metrics import OpenTelemetryMetricRecorder
 
 logger = logging.getLogger(name=__name__)
 
+# Attribute keys match the Go connector's public contract (METRICS.md). The
+# alloydb. prefix also keeps them from colliding with backend resource labels
+# such as Cloud Monitoring's prometheus_target "instance" and "location".
+
 # Instance identity keys (see the Attributes comment in metrics.py).
-PROJECT = "project"
-LOCATION = "location"
-CLUSTER = "cluster"
-INSTANCE = "instance"
+PROJECT_ID = "alloydb.project_id"
+LOCATION = "alloydb.location"
+CLUSTER_ID = "alloydb.cluster_id"
+INSTANCE_ID = "alloydb.instance_id"
 
 # Event attribute keys
-CONNECTOR_TYPE = "connector_type"
-AUTH_TYPE = "auth_type"
-IS_CACHE_HIT = "is_cache_hit"
-STATUS = "status"
-REFRESH_TYPE = "refresh_type"
+CONNECTOR_TYPE = "alloydb.connector.type"
+AUTH_TYPE = "alloydb.auth.type"
+CACHE_HIT = "alloydb.cache.hit"
+STATUS = "alloydb.status"
+REFRESH_TYPE = "alloydb.refresh.type"
 
 # connector_type value for this library
 CONNECTOR_TYPE_PYTHON = "python"
@@ -88,10 +92,10 @@ def instance_attributes(
     create unbounded, restart-specific time series.
     """
     return {
-        PROJECT: project,
+        PROJECT_ID: project,
         LOCATION: location,
-        CLUSTER: cluster,
-        INSTANCE: instance,
+        CLUSTER_ID: cluster,
+        INSTANCE_ID: instance,
     }
 
 
@@ -152,7 +156,7 @@ class DialTracker:
             **self._instance,
             CONNECTOR_TYPE: CONNECTOR_TYPE_PYTHON,
             AUTH_TYPE: self._auth_type,
-            IS_CACHE_HIT: "true" if self.is_cache_hit else "false",
+            CACHE_HIT: self.is_cache_hit,
             STATUS: self.status or DIAL_USER_ERROR,
             REFRESH_TYPE: self._refresh_type,
         }

@@ -20,7 +20,12 @@ from google.cloud.alloydbconnector.metrics import FanOutMetricRecorder
 from google.cloud.alloydbconnector.metrics import NullMetricRecorder
 from google.cloud.alloydbconnector.metrics import OpenTelemetryMetricRecorder
 
-ATTRS = {"project": "p", "location": "l", "cluster": "c", "instance": "i"}
+ATTRS = {
+    "alloydb.project_id": "p",
+    "alloydb.location": "l",
+    "alloydb.cluster_id": "c",
+    "alloydb.instance_id": "i",
+}
 
 
 class FakeRecorder:
