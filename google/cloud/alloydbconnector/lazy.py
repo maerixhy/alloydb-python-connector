@@ -22,6 +22,11 @@ from typing import Optional
 from google.cloud.alloydbconnector.client import AlloyDBClient
 from google.cloud.alloydbconnector.connection_info import ConnectionInfo
 from google.cloud.alloydbconnector.instance import _parse_instance_uri
+from google.cloud.alloydbconnector.metric_events import REFRESH_LAZY
+from google.cloud.alloydbconnector.metric_events import instance_attributes
+from google.cloud.alloydbconnector.metric_events import record_refresh
+from google.cloud.alloydbconnector.metrics import MetricRecorder
+from google.cloud.alloydbconnector.metrics import NullMetricRecorder
 from google.cloud.alloydbconnector.refresh_utils import _refresh_buffer
 
 logger = logging.getLogger(name=__name__)
@@ -41,6 +46,7 @@ class LazyRefreshCache:
         instance_uri: str,
         client: AlloyDBClient,
         keys: asyncio.Future,
+        metric_recorder: Optional[MetricRecorder] = None,
     ) -> None:
         """Initializes a LazyRefreshCache instance.
 
@@ -50,6 +56,8 @@ class LazyRefreshCache:
             client (AlloyDBClient): The AlloyDB client instance.
             keys (asyncio.Future): A future to the client's public-private key
                 pair.
+            metric_recorder (MetricRecorder): Receives refresh results.
+                Defaults to recording nothing.
         """
         # validate and parse instance connection name
         self._project, self._region, self._cluster, self._name = _parse_instance_uri(
@@ -59,6 +67,10 @@ class LazyRefreshCache:
 
         self._keys = keys
         self._client = client
+        self._metric_recorder: MetricRecorder = metric_recorder or NullMetricRecorder()
+        self._instance_attrs = instance_attributes(
+            self._project, self._region, self._cluster, self._name
+        )
         self._lock = asyncio.Lock()
         self._cached: Optional[ConnectionInfo] = None
         self._needs_refresh = False
@@ -106,7 +118,13 @@ class LazyRefreshCache:
                     f"['{self._instance_uri}']: Connection info "
                     f"refresh operation failed: {str(e)}"
                 )
+                record_refresh(
+                    self._metric_recorder, self._instance_attrs, REFRESH_LAZY, False
+                )
                 raise
+            record_refresh(
+                self._metric_recorder, self._instance_attrs, REFRESH_LAZY, True
+            )
             logger.debug(
                 f"['{self._instance_uri}']: Connection info "
                 "refresh operation completed successfully"

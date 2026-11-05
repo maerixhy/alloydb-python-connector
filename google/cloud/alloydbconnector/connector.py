@@ -40,6 +40,15 @@ from google.cloud.alloydbconnector.enums import RefreshStrategy
 from google.cloud.alloydbconnector.exceptions import ClosedConnectorError
 from google.cloud.alloydbconnector.instance import RefreshAheadCache
 from google.cloud.alloydbconnector.lazy import LazyRefreshCache
+from google.cloud.alloydbconnector.metric_events import DIAL_CACHE_ERROR
+from google.cloud.alloydbconnector.metric_events import DIAL_MDX_ERROR
+from google.cloud.alloydbconnector.metric_events import DIAL_TCP_ERROR
+from google.cloud.alloydbconnector.metric_events import DIAL_TLS_ERROR
+from google.cloud.alloydbconnector.metric_events import DIAL_USER_ERROR
+from google.cloud.alloydbconnector.metric_events import REFRESH_AHEAD
+from google.cloud.alloydbconnector.metric_events import REFRESH_LAZY
+from google.cloud.alloydbconnector.metric_events import DialTracker
+from google.cloud.alloydbconnector.metric_events import build_metric_recorder
 import google.cloud.alloydbconnector.pg8000 as pg8000
 import google.cloud.alloydbconnector.psycopg as psycopg
 from google.cloud.alloydbconnector.static import StaticConnectionInfoCache
@@ -102,6 +111,11 @@ class Connector:
             This is a *dev-only* option and should not be used in production as
             it will result in failed connections after the client certificate
             expires.
+        enable_otel_metrics (bool): Record connector metrics through the
+            application's global OpenTelemetry meter provider. The connector
+            never configures or shuts down that provider, and nothing is
+            exported unless the application has configured one.
+            Default: True
     """
 
     def __init__(
@@ -116,6 +130,7 @@ class Connector:
         refresh_strategy: str | RefreshStrategy = RefreshStrategy.BACKGROUND,
         static_conn_info: Optional[io.TextIOBase] = None,
         universe_domain: Optional[str] = None,
+        enable_otel_metrics: bool = True,
     ) -> None:
         # create event loop and start it in background thread
         self._loop: asyncio.AbstractEventLoop = asyncio.new_event_loop()
@@ -179,6 +194,7 @@ class Connector:
         )
         self._client: Optional[AlloyDBClient] = None
         self._static_conn_info = static_conn_info
+        self._metric_recorder = build_metric_recorder(enable_otel_metrics)
         self._closed = False
 
     @property
@@ -243,22 +259,42 @@ class Connector:
                 driver=driver,
             )
         enable_iam_auth = kwargs.pop("enable_iam_auth", self._enable_iam_auth)
+        dial = DialTracker(
+            self._metric_recorder,
+            instance_uri,
+            enable_iam_auth,
+            REFRESH_LAZY
+            if self._refresh_strategy == RefreshStrategy.LAZY
+            else REFRESH_AHEAD,
+        )
+        try:
+            return await self._connect_async(
+                instance_uri, driver, enable_iam_auth, dial, **kwargs
+            )
+        finally:
+            dial.finish()
+
+    async def _connect_async(
+        self,
+        instance_uri: str,
+        driver: str,
+        enable_iam_auth: bool,
+        dial: DialTracker,
+        **kwargs: Any,
+    ) -> Any:
+        """Body of connect_async. Sets ``dial.status`` at each failure point."""
         # use existing connection info if possible
         if instance_uri in self._cache:
             cache = self._cache[instance_uri]
+            dial.is_cache_hit = True
         elif self._static_conn_info:
             cache = StaticConnectionInfoCache(instance_uri, self._static_conn_info)
         else:
-            if self._refresh_strategy == RefreshStrategy.LAZY:
-                logger.debug(
-                    f"['{instance_uri}']: Refresh strategy is set to lazy refresh"
-                )
-                cache = LazyRefreshCache(instance_uri, self._client, self._keys)
-            else:
-                logger.debug(
-                    f"['{instance_uri}']: Refresh strategy is set to background refresh"
-                )
-                cache = RefreshAheadCache(instance_uri, self._client, self._keys)
+            try:
+                cache = self._new_cache(instance_uri)
+            except Exception:
+                dial.status = DIAL_CACHE_ERROR
+                raise
             self._cache[instance_uri] = cache
             logger.debug(f"['{instance_uri}']: Connection info added to cache")
 
@@ -283,12 +319,18 @@ class Connector:
         # if ip_type is str, convert to IPTypes enum
         if isinstance(ip_type, str):
             ip_type = IPTypes(ip_type.upper())
+        # with an error from AlloyDB API call or IP type, invalidate the
+        # cache and re-raise the error
         try:
             conn_info = await cache.connect_info()
+        except Exception:
+            dial.status = DIAL_CACHE_ERROR
+            await self._remove_cached(instance_uri)
+            raise
+        try:
             ip_address = conn_info.get_preferred_ip(ip_type)
         except Exception:
-            # with an error from AlloyDB API call or IP type, invalidate the
-            # cache and re-raise the error
+            dial.status = DIAL_USER_ERROR
             await self._remove_cached(instance_uri)
             raise
         logger.debug(f"['{instance_uri}']: Connecting to {ip_address}:5433")
@@ -301,8 +343,13 @@ class Connector:
                 ip_address,
                 await conn_info.create_ssl_context(),
                 enable_iam_auth,
+                dial=dial,
             )
             sock = await self._loop.run_in_executor(None, metadata_partial)
+            # The connection to AlloyDB is established once the metadata
+            # exchange succeeds. As in the Go connector, the database
+            # driver's own startup is not part of the dial.
+            dial.mark_success()
             connect_partial = partial(connector, sock, **kwargs)
             return await self._loop.run_in_executor(None, connect_partial)
         except Exception:
@@ -316,6 +363,7 @@ class Connector:
         ip_address: str,
         ctx: ssl.SSLContext,
         enable_iam_auth: bool,
+        dial: Optional[DialTracker] = None,
     ) -> ssl.SSLSocket:
         """
         Sends metadata about the connection prior to the database
@@ -343,24 +391,53 @@ class Connector:
             ctx (ssl.SSLContext): Context used to create a TLS connection
                 with AlloyDB instance ssl certificates.
             enable_iam_auth (bool): Flag to enable IAM database authentication.
+            dial (DialTracker): Receives the failure status (tcp, tls or mdx)
+                for connector metrics.
 
         Returns:
             sock (ssl.SSLSocket): mTLS/SSL socket connected to AlloyDB Proxy server.
         """
         # Create socket and wrap with SSL/TLS context
-        sock = ctx.wrap_socket(
-            socket.create_connection((ip_address, SERVER_PROXY_PORT)),
-            server_hostname=ip_address,
-        )
+        try:
+            raw_sock = socket.create_connection((ip_address, SERVER_PROXY_PORT))
+        except Exception:
+            if dial is not None:
+                dial.status = DIAL_TCP_ERROR
+            raise
+        try:
+            # the TLS handshake runs inside wrap_socket
+            sock = ctx.wrap_socket(raw_sock, server_hostname=ip_address)
+        except Exception:
+            if dial is not None:
+                dial.status = DIAL_TLS_ERROR
+            raise
         try:
             return self._metadata_exchange(sock, instance_uri, enable_iam_auth)
         except Exception:
+            if dial is not None:
+                dial.status = DIAL_MDX_ERROR
             # Once the handshake is done, this socket is only reachable from
             # here, so a failed exchange has to close it. wrap_socket closes
             # the file descriptor itself when the handshake fails, but nothing
             # closes an established socket on the way out.
             sock.close()
             raise
+
+    def _new_cache(self, instance_uri: str) -> CacheTypes:
+        """Create a refreshing connection info cache for an instance."""
+        if self._client is None:
+            raise RuntimeError("AlloyDB client is not initialized")
+        if self._refresh_strategy == RefreshStrategy.LAZY:
+            logger.debug(f"['{instance_uri}']: Refresh strategy is set to lazy refresh")
+            return LazyRefreshCache(
+                instance_uri, self._client, self._keys, self._metric_recorder
+            )
+        logger.debug(
+            f"['{instance_uri}']: Refresh strategy is set to background refresh"
+        )
+        return RefreshAheadCache(
+            instance_uri, self._client, self._keys, self._metric_recorder
+        )
 
     def _metadata_exchange(
         self,

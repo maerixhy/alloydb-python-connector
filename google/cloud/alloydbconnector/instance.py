@@ -21,9 +21,15 @@ from datetime import timezone
 import logging
 import re
 from typing import TYPE_CHECKING
+from typing import Optional
 
 from google.cloud.alloydbconnector.connection_info import ConnectionInfo
 from google.cloud.alloydbconnector.exceptions import RefreshError
+from google.cloud.alloydbconnector.metric_events import REFRESH_AHEAD
+from google.cloud.alloydbconnector.metric_events import instance_attributes
+from google.cloud.alloydbconnector.metric_events import record_refresh
+from google.cloud.alloydbconnector.metrics import MetricRecorder
+from google.cloud.alloydbconnector.metrics import NullMetricRecorder
 from google.cloud.alloydbconnector.rate_limiter import AsyncRateLimiter
 from google.cloud.alloydbconnector.refresh_utils import _is_valid
 from google.cloud.alloydbconnector.refresh_utils import _seconds_until_refresh
@@ -70,6 +76,8 @@ class RefreshAheadCache:
             ex. projects/<PROJECT>/locations/<REGION>/clusters/<CLUSTER>/instances/<INSTANCE>
         client (AlloyDBClient): Client used to make requests to AlloyDB APIs.
         keys (tuple[rsa.RSAPrivateKey, str]): Private and Public key pair.
+        metric_recorder (MetricRecorder): Receives refresh results.
+            Defaults to recording nothing.
     """
 
     def __init__(
@@ -77,6 +85,7 @@ class RefreshAheadCache:
         instance_uri: str,
         client: AlloyDBClient,
         keys: asyncio.Future[tuple[rsa.RSAPrivateKey, str]],
+        metric_recorder: Optional[MetricRecorder] = None,
     ) -> None:
         # validate and parse instance_uri
         self._project, self._region, self._cluster, self._name = _parse_instance_uri(
@@ -86,6 +95,10 @@ class RefreshAheadCache:
         self._instance_uri = instance_uri
         self._client = client
         self._keys = keys
+        self._metric_recorder: MetricRecorder = metric_recorder or NullMetricRecorder()
+        self._instance_attrs = instance_attributes(
+            self._project, self._region, self._cluster, self._name
+        )
         self._refresh_rate_limiter = AsyncRateLimiter(
             max_capacity=2,
             rate=1 / 30,
@@ -133,10 +146,14 @@ class RefreshAheadCache:
                 f"['{self._instance_uri}']: Connection info refresh operation"
                 f" failed: {str(e)}"
             )
+            record_refresh(
+                self._metric_recorder, self._instance_attrs, REFRESH_AHEAD, False
+            )
             raise
 
         finally:
             self._refresh_in_progress.clear()
+        record_refresh(self._metric_recorder, self._instance_attrs, REFRESH_AHEAD, True)
         return connection_info
 
     def _schedule_refresh(self, delay: int) -> asyncio.Task:

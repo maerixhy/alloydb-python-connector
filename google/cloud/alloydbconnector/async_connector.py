@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import ssl
 from types import TracebackType
 from typing import TYPE_CHECKING
 from typing import Any
@@ -31,6 +32,14 @@ from google.cloud.alloydbconnector.enums import RefreshStrategy
 from google.cloud.alloydbconnector.exceptions import ClosedConnectorError
 from google.cloud.alloydbconnector.instance import RefreshAheadCache
 from google.cloud.alloydbconnector.lazy import LazyRefreshCache
+from google.cloud.alloydbconnector.metric_events import DIAL_CACHE_ERROR
+from google.cloud.alloydbconnector.metric_events import DIAL_TCP_ERROR
+from google.cloud.alloydbconnector.metric_events import DIAL_TLS_ERROR
+from google.cloud.alloydbconnector.metric_events import DIAL_USER_ERROR
+from google.cloud.alloydbconnector.metric_events import REFRESH_AHEAD
+from google.cloud.alloydbconnector.metric_events import REFRESH_LAZY
+from google.cloud.alloydbconnector.metric_events import DialTracker
+from google.cloud.alloydbconnector.metric_events import build_metric_recorder
 from google.cloud.alloydbconnector.types import CacheTypes
 from google.cloud.alloydbconnector.utils import generate_keys
 from google.cloud.alloydbconnector.utils import strip_http_prefix
@@ -79,6 +88,11 @@ class AsyncConnector:
             of the following: RefreshStrategy.LAZY ("LAZY") or
             RefreshStrategy.BACKGROUND ("BACKGROUND").
             Default: RefreshStrategy.BACKGROUND
+        enable_otel_metrics (bool): Record connector metrics through the
+            application's global OpenTelemetry meter provider. The connector
+            never configures or shuts down that provider, and nothing is
+            exported unless the application has configured one.
+            Default: True
     """
 
     def __init__(
@@ -92,6 +106,7 @@ class AsyncConnector:
         user_agent: Optional[str] = None,
         refresh_strategy: str | RefreshStrategy = RefreshStrategy.BACKGROUND,
         universe_domain: Optional[str] = None,
+        enable_otel_metrics: bool = True,
     ) -> None:
         self._cache: dict[str, CacheTypes] = {}
         # initialize default params
@@ -160,6 +175,7 @@ class AsyncConnector:
         except RuntimeError:
             pass
         self._client: Optional[AlloyDBClient] = None
+        self._metric_recorder = build_metric_recorder(enable_otel_metrics)
         self._closed = False
 
     @property
@@ -207,21 +223,40 @@ class AsyncConnector:
             )
 
         enable_iam_auth = kwargs.pop("enable_iam_auth", self._enable_iam_auth)
+        dial = DialTracker(
+            self._metric_recorder,
+            instance_uri,
+            enable_iam_auth,
+            REFRESH_LAZY
+            if self._refresh_strategy == RefreshStrategy.LAZY
+            else REFRESH_AHEAD,
+        )
+        try:
+            return await self._connect(
+                instance_uri, driver, enable_iam_auth, dial, **kwargs
+            )
+        finally:
+            dial.finish()
 
+    async def _connect(
+        self,
+        instance_uri: str,
+        driver: str,
+        enable_iam_auth: bool,
+        dial: DialTracker,
+        **kwargs: Any,
+    ) -> Any:
+        """Body of connect. Sets ``dial.status`` at each failure point."""
         # use existing connection info if possible
         if instance_uri in self._cache:
             cache = self._cache[instance_uri]
+            dial.is_cache_hit = True
         else:
-            if self._refresh_strategy == RefreshStrategy.LAZY:
-                logger.debug(
-                    f"['{instance_uri}']: Refresh strategy is set to lazy refresh"
-                )
-                cache = LazyRefreshCache(instance_uri, self._client, self._keys)
-            else:
-                logger.debug(
-                    f"['{instance_uri}']: Refresh strategy is set to background refresh"
-                )
-                cache = RefreshAheadCache(instance_uri, self._client, self._keys)
+            try:
+                cache = self._new_cache(instance_uri)
+            except Exception:
+                dial.status = DIAL_CACHE_ERROR
+                raise
             self._cache[instance_uri] = cache
             logger.debug(f"['{instance_uri}']: Connection info added to cache")
 
@@ -245,12 +280,18 @@ class AsyncConnector:
         # if ip_type is str, convert to IPTypes enum
         if isinstance(ip_type, str):
             ip_type = IPTypes(ip_type.upper())
+        # with an error from AlloyDB API call or IP type, invalidate the
+        # cache and re-raise the error
         try:
             conn_info = await cache.connect_info()
+        except Exception:
+            dial.status = DIAL_CACHE_ERROR
+            await self._remove_cached(instance_uri)
+            raise
+        try:
             ip_address = conn_info.get_preferred_ip(ip_type)
         except Exception:
-            # with an error from AlloyDB API call or IP type, invalidate the
-            # cache and re-raise the error
+            dial.status = DIAL_USER_ERROR
             await self._remove_cached(instance_uri)
             raise
         logger.debug(f"['{instance_uri}']: Connecting to {ip_address}:5433")
@@ -268,13 +309,34 @@ class AsyncConnector:
         if enable_iam_auth:
             kwargs["password"] = get_authentication_token
         try:
-            return await connector(
+            conn = await connector(
                 ip_address, await conn_info.create_ssl_context(), **kwargs
             )
-        except Exception:
+        except Exception as e:
+            dial.status = _classify_driver_error(e)
             # we attempt a force refresh, then throw the error
             await cache.force_refresh()
             raise
+        # asyncpg opens the socket itself, so the dial here includes the
+        # driver's startup, unlike the sync connector.
+        dial.mark_success()
+        return conn
+
+    def _new_cache(self, instance_uri: str) -> CacheTypes:
+        """Create a refreshing connection info cache for an instance."""
+        if self._client is None or self._keys is None:
+            raise RuntimeError("AlloyDB client is not initialized")
+        if self._refresh_strategy == RefreshStrategy.LAZY:
+            logger.debug(f"['{instance_uri}']: Refresh strategy is set to lazy refresh")
+            return LazyRefreshCache(
+                instance_uri, self._client, self._keys, self._metric_recorder
+            )
+        logger.debug(
+            f"['{instance_uri}']: Refresh strategy is set to background refresh"
+        )
+        return RefreshAheadCache(
+            instance_uri, self._client, self._keys, self._metric_recorder
+        )
 
     async def _remove_cached(self, instance_uri: str) -> None:
         """Stops all background refreshes and deletes the connection
@@ -304,3 +366,17 @@ class AsyncConnector:
         and close client."""
         await asyncio.gather(*[cache.close() for cache in self._cache.values()])
         self._closed = True
+
+
+def _classify_driver_error(e: BaseException) -> str:
+    """Map a driver connect error to a dial status.
+
+    asyncpg does TCP, TLS and the Postgres startup in one call, so the
+    connector cannot mark the failing step directly the way the sync path
+    does. ssl.SSLError is checked first because it subclasses OSError.
+    """
+    if isinstance(e, ssl.SSLError):
+        return DIAL_TLS_ERROR
+    if isinstance(e, OSError):
+        return DIAL_TCP_ERROR
+    return DIAL_USER_ERROR
