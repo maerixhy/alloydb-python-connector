@@ -15,15 +15,30 @@
 from __future__ import annotations
 
 from typing import Protocol
+from typing import Union
 
 from opentelemetry import metrics
 
-# Attributes attached to a single measurement. Keys and values are always
-# strings. Every measurement carries the target instance identity:
-#   project, location, cluster, instance
+from google.cloud.alloydbconnector.version import __version__
+
+# Metric names, units and the instrumentation scope match the Go connector's
+# public contract (METRICS.md), so dashboards and queries work for both.
+METER_NAME = "google.cloud.alloydbconnector"
+DIAL_COUNT = "alloydb.connector.dial.count"
+DIAL_DURATION = "alloydb.connector.dial.duration"
+CONNECTIONS_OPEN = "alloydb.connector.connections.open"
+BYTES_SENT = "alloydb.connector.bytes.sent"
+BYTES_RECEIVED = "alloydb.connector.bytes.received"
+REFRESH_COUNT = "alloydb.connector.refresh.count"
+
+# Attributes attached to a single measurement. Every measurement carries the
+# target instance identity:
+#   alloydb.project_id, alloydb.location, alloydb.cluster_id,
+#   alloydb.instance_id
 # Individual events add their own bounded keys on top (for example
-# "status" for dials and "refresh_type" for refreshes).
-Attributes = dict[str, str]
+# "alloydb.status" for dials and "alloydb.refresh.type" for refreshes).
+# Values are strings, except "alloydb.cache.hit", which is a bool.
+Attributes = dict[str, Union[str, bool]]
 
 
 class MetricRecorder(Protocol):
@@ -63,24 +78,34 @@ class OpenTelemetryMetricRecorder:
     """
 
     def __init__(self) -> None:
-        meter = metrics.get_meter("alloydb.googleapis.com/client")
+        meter = metrics.get_meter(METER_NAME, version=__version__)
         self._dial_count = meter.create_counter(
-            "dial_count", description="Number of dial attempts."
+            DIAL_COUNT, unit="{dial}", description="Dial attempts."
         )
         self._dial_latency = meter.create_histogram(
-            "dial_latencies", unit="ms", description="Dial latency."
+            DIAL_DURATION,
+            unit="ms",
+            description="Duration of successful dial operations.",
         )
         self._open_connections = meter.create_up_down_counter(
-            "open_connections", description="Number of open connections."
+            CONNECTIONS_OPEN,
+            unit="{connection}",
+            description="Open connector connections.",
         )
         self._bytes_sent = meter.create_counter(
-            "bytes_sent", unit="By", description="Bytes sent to the server."
+            BYTES_SENT,
+            unit="By",
+            description="Bytes sent through connector connections.",
         )
         self._bytes_received = meter.create_counter(
-            "bytes_received", unit="By", description="Bytes received from the server."
+            BYTES_RECEIVED,
+            unit="By",
+            description="Bytes received through connector connections.",
         )
         self._refresh_count = meter.create_counter(
-            "refresh_count", description="Number of connection info refreshes."
+            REFRESH_COUNT,
+            unit="{refresh}",
+            description="Connection-information refresh operations.",
         )
 
     def record_dial_count(self, attrs: Attributes) -> None:
