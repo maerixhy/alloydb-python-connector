@@ -1,0 +1,8 @@
+pg8000>=1.31.1
+opentelemetry-sdk>=1.44.0
+opentelemetry-exporter-gcp-monitoring
+opentelemetry-exporter-prometheus
+prometheus-client
+opentelemetry-exporter-otlp-proto-grpc
+grpcio
+google-auth
