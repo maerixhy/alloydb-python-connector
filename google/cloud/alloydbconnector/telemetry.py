@@ -85,6 +85,9 @@ from typing import Union
 import uuid
 import warnings
 
+from google.cloud.alloydbconnector.metrics import FanOutMetricRecorder
+from google.cloud.alloydbconnector.metrics import new_global_metric_recorder
+
 logger = logging.getLogger(__name__)
 
 _PYTHON_CONNECTOR = "python"
@@ -836,7 +839,7 @@ class _MetricRecorder:
 
 
 # Type alias for use in type annotations.
-MetricRecorderType = Union[_MetricRecorder, NullMetricRecorder]
+MetricRecorderType = Union[_MetricRecorder, NullMetricRecorder, FanOutMetricRecorder]
 TelemetryProviderType = Union[_TelemetryProvider, NullTelemetryProvider]
 
 
@@ -933,12 +936,18 @@ class _TelemetryMixin:
             # the refresh caches still reject a malformed one themselves.
             return NullMetricRecorder()
         provider = self._get_telemetry_provider(project)
-        mr = provider.create_metric_recorder(
+        mr: MetricRecorderType = provider.create_metric_recorder(
             project_id=project,
             location=region,
             cluster=cluster,
             instance=name,
         )
+        # Also report to the application's global OpenTelemetry provider. The
+        # built-in option does not cover this path: an application that does
+        # not want these metrics simply does not configure an exporter.
+        global_mr = new_global_metric_recorder(project, region, cluster, name)
+        if global_mr is not None:
+            mr = FanOutMetricRecorder([mr, global_mr])
         self._metric_recorders[instance_uri] = mr
         return mr
 

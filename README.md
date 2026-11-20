@@ -302,6 +302,46 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s]: %(message)s")
 logging.getLogger("google.cloud.alloydbconnector").setLevel(logging.DEBUG)
 ```
 
+### OpenTelemetry Metrics
+
+`Connector` and `AsyncConnector` record metrics through your application's
+global OpenTelemetry `MeterProvider`. Configure OpenTelemetry once at startup with
+the exporter you want (OTLP, Prometheus, Google Cloud, ...) and the
+connector's metrics flow through it. The connector never configures, flushes
+or shuts down the provider, and without a configured provider nothing is
+exported.
+
+```python
+from opentelemetry import metrics
+from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+
+metrics.set_meter_provider(
+    MeterProvider(metric_readers=[PeriodicExportingMetricReader(OTLPMetricExporter())])
+)
+```
+
+Metric names, units and attributes match the Go connector. The
+instrumentation scope is `google.cloud.alloydbconnector`.
+
+| Metric | Type | Unit | Attributes |
+| --- | --- | --- | --- |
+| `alloydb.connector.dial.count` | Counter | `{dial}` | `alloydb.auth.type`, `alloydb.cache.hit`, `alloydb.status` |
+| `alloydb.connector.dial.duration` | Histogram | `ms` | |
+| `alloydb.connector.connections.open` | UpDownCounter | `{connection}` | `alloydb.auth.type` |
+| `alloydb.connector.bytes.sent` | Counter | `By` | |
+| `alloydb.connector.bytes.received` | Counter | `By` | |
+| `alloydb.connector.refresh.count` | Counter | `{refresh}` | `alloydb.status`, `alloydb.refresh.type` |
+
+Every metric also carries `alloydb.project_id`, `alloydb.location`,
+`alloydb.cluster_id`, `alloydb.instance_id` and `alloydb.connector.type`.
+Dial status is one of `success`, `user_error`, `cache_error`, `tcp_error`,
+`tls_error` or `mdx_error`. With `Connector`, byte counts and open
+connections are recorded for connections made with built-in telemetry
+enabled. `AsyncConnector` records open connections but not bytes, since
+asyncpg exposes no hook for observing them.
+
 ## Import Paths
 
 This package supports two equivalent import paths:
